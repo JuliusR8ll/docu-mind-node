@@ -12,6 +12,16 @@ import os from 'os';
 import levenshtein from 'fast-levenshtein';
 import nlp from 'compromise';
 
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+
+import { fileURLToPath } from 'url'; // NEW import
+import { dirname } from 'path';     // NEW import
+import { v4 as uuidv4 } from 'uuid';
+
+// NEW IMPORTS FOR DATE/TIME ZONE HANDLING
+import {toZonedTime } from 'date-fns-tz'; // Correct import for utcToZonedTime
+import { format } from 'date-fns';  
 dotenv.config();
 
 process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = 0;
@@ -21,26 +31,71 @@ const PORT = process.env.PORT || 8000;
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const JWT_SECRET = process.env.JWT_SECRET || 'supersecretjwtkeythatshouldbeverylongandrandom'; // !! USE A STRONG, RANDOM KEY IN YOUR .ENV FILE !!
+
+// NEW: User data storage (for demonstration, in a JSON file)
+const USERS_FILE = path.join(__dirname, 'users.json');
+const ORDERS_FILE = path.join(__dirname, 'orders.json');
+
+// Helper to read users from file
+const readUsers = () => {
+    try {
+        if (!fs.existsSync(USERS_FILE)) {
+            fs.writeFileSync(USERS_FILE, '[]'); // Create empty array if file doesn't exist
+        }
+        const data = fs.readFileSync(USERS_FILE, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        console.error('Error reading users.json:', error);
+        return [];
+    }
+};
+
+// Helper to write users to file
+const writeUsers = (users) => {
+    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+};
+
 // File conversion functions
 function convertExcelToText(buffer) {
     try {
         const workbook = XLSX.read(buffer, { type: 'buffer' });
         let text = '';
+        let structuredData = []; // Array to hold {item_name, price, available_quantity}
 
         workbook.SheetNames.forEach(sheetName => {
             const sheet = workbook.Sheets[sheetName];
             const jsonData = XLSX.utils.sheet_to_json(sheet);
+            
             if (jsonData.length === 0) {
                 text += `{"sheet":"${sheetName}","note":"empty"}\n`;
             } else {
                 text += `\n=== Sheet: ${sheetName} ===\n`;
                 jsonData.forEach((row, index) => {
                     text += `Row ${index + 1}: ${JSON.stringify(row)}\n`;
+                    
+                    // Attempt to extract item_name, price, quantity from row
+                    // ASSUMPTION: Your Excel/CSV will have columns like 'Item Name', 'Price', 'Quantity'
+                    // Adjust these keys ('Item Name', 'Price', 'Quantity') to match your actual catalog file's column headers
+                    const itemName = row['Item Name'] || row['item'] || row['Item'];
+                    const price = parseFloat(row['Price']) || parseFloat(row['price']) || 0;
+                    const quantity = parseInt(row['Quantity']) || parseInt(row['quantity']) || parseInt(row['Stock']) || 0;
+
+                    if (itemName && price > 0 && quantity >= 0) {
+                        structuredData.push({
+                            item_name: String(itemName).trim(),
+                            price: price,
+                            available_quantity: quantity
+                        });
+                    }
                 });
             }
         });
 
-        return text;
+        return { text, structuredData }; // Return both text and structured data
     } catch (err) {
         throw new Error('Failed to read Excel file: ' + err.message);
     }
@@ -49,10 +104,10 @@ function convertExcelToText(buffer) {
 function convertCsvToText(buffer) {
     return new Promise((resolve, reject) => {
         let text = '';
+        let structuredData = []; // Array to hold {item_name, price, available_quantity}
         let rowCount = 0;
         
         try {
-            // Create a temporary file
             const tempFile = path.join(os.tmpdir(), `csv_${Date.now()}.csv`);
             fs.writeFileSync(tempFile, buffer);
             
@@ -61,14 +116,27 @@ function convertCsvToText(buffer) {
                 .on('data', (row) => {
                     rowCount++;
                     text += `Row ${rowCount}: ${JSON.stringify(row)}\n`;
+
+                    // Attempt to extract item_name, price, quantity from row
+                    // ASSUMPTION: Your Excel/CSV will have columns like 'Item Name', 'Price', 'Quantity'
+                    // Adjust these keys ('Item Name', 'Price', 'Quantity') to match your actual catalog file's column headers
+                    const itemName = row['Item Name'] || row['item'] || row['Item'];
+                    const price = parseFloat(row['Price']) || parseFloat(row['price']) || 0;
+                    const quantity = parseInt(row['Quantity']) || parseInt(row['quantity']) || parseInt(row['Stock']) || 0;
+
+                    if (itemName && price > 0 && quantity >= 0) {
+                        structuredData.push({
+                            item_name: String(itemName).trim(),
+                            price: price,
+                            available_quantity: quantity
+                        });
+                    }
                 })
                 .on('end', () => {
-                    // Clean up temp file
                     fs.unlinkSync(tempFile);
-                    resolve(text);
+                    resolve({ text, structuredData }); // Resolve with both text and structured data
                 })
                 .on('error', (err) => {
-                    // Clean up temp file
                     if (fs.existsSync(tempFile)) {
                         fs.unlinkSync(tempFile);
                     }
@@ -407,10 +475,117 @@ const upload = multer({
 let pdfContent = '';
 let isProcessed = false;
 
+let processedCatalogData = [];
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+    if (token == null) {
+        return res.status(401).json({ error: 'Authentication token required' });
+    }
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) {
+            console.error('JWT verification failed:', err.message);
+            // Token is invalid or expired
+            return res.status(403).json({ error: 'Invalid or expired token' });
+        }
+        req.user = user; // Attach user payload to request (id, username, phone_number)
+        next(); // Proceed to the next middleware/route handler
+    });
+};
+
+app.post('/register', async (req, res) => {
+    const { username, phone_number, password } = req.body;
+
+    if (!username || !phone_number || !password) {
+        return res.status(400).json({ error: 'Username, phone number, and password are required' });
+    }
+
+    const users = readUsers();
+
+    if (users.find(u => u.username === username)) {
+        return res.status(409).json({ error: 'Username already exists' });
+    }
+
+    try {
+        const hashedPassword = await bcrypt.hash(password, 10); // Hash password with salt rounds = 10
+        const newUser = {
+            id: Date.now().toString(), // Simple unique ID for demo
+            username,
+            phone_number,
+            password: hashedPassword
+        };
+
+        users.push(newUser);
+        writeUsers(users);
+
+        console.log(`✅ User registered: ${username}`);
+        res.status(201).json({ message: 'User registered successfully!' });
+
+    } catch (error) {
+        console.error('❌ Registration error:', error);
+        res.status(500).json({ error: 'Failed to register user', details: error.message });
+    }
+});
+
+// Login user
+app.post('/login', async (req, res) => {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+        return res.status(400).json({ error: 'Username and password are required' });
+    }
+
+    const users = readUsers();
+    const user = users.find(u => u.username === username);
+
+    if (!user) {
+        return res.status(401).json({ error: 'Invalid username or password' });
+    }
+
+    try {
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+
+        if (!isPasswordValid) {
+            return res.status(401).json({ error: 'Invalid username or password' });
+        }
+
+        // Create JWT
+        const token = jwt.sign(
+            { id: user.id, username: user.username, phone_number: user.phone_number },
+            JWT_SECRET,
+            { expiresIn: '1h' } // Token expires in 1 hour
+        );
+
+        console.log(`✅ User logged in: ${username}`);
+        res.json({
+            message: 'Logged in successfully!',
+            token,
+            user: { // Send back minimal user data
+                username: user.username,
+                phone_number: user.phone_number
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Login error:', error);
+        res.status(500).json({ error: 'Failed to log in', details: error.message });
+    }
+});
+
+// Logout user (client-side focused for JWTs, but route validates token)
+app.post('/logout', authenticateToken, (req, res) => {
+    // For JWTs, logout is primarily handled client-side by deleting the token.
+    // This backend route just confirms the token is valid before acknowledging.
+    console.log(`✅ User logged out (token validated): ${req.user.username}`);
+    res.json({ message: 'Logged out successfully!' });
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -425,6 +600,107 @@ app.get('/health', (req, res) => {
     });
 });
 
+
+app.post('/conversational_order', authenticateToken, async (req, res) => {
+    // chatHistory: an array of { role: 'user'/'assistant', content: '...' }
+    // currentStep: the current logical step ('item_selection', 'quantity_selection', etc.)
+    // availableItems: the list of item names from the catalog
+    // userInput: the latest message from the user
+    const { chatHistory, currentStep, availableItems, userInput } = req.body;
+
+    if (!chatHistory || !currentStep || !userInput) {
+        return res.status(400).json({ error: 'Chat history, current step, and user input are required.' });
+    }
+
+    // Define the system prompt based on the current step
+    let systemPrompt;
+    // NEW: Add variables for model and response format
+    let model = "llama-3.1-8b-instant"; // Default to a fast model
+    let responseFormat = null; // Default to no specific format
+
+    switch (currentStep) {
+        case 'item_selection':
+            model = "llama-3.3-70b-versatile";
+            responseFormat = { type: "json_object" };
+
+            systemPrompt = `You are a smart and friendly restaurant ordering assistant. Your task is to intelligently match the user's input to an item from the menu, even if there are typos or it's a partial match.
+            
+            The user wants to order an item. Here is the list of available items: [${availableItems.join(', ')}].
+
+            Analyze the user's last message.
+            - If their message clearly refers to one of the items in the list (e.g., "Classic" should match "Classic Burger", "Fren Frie" should match "French Fries"), identify the best match.
+            - If their message contains words like "done", "proceed", "finished", "complete", or "checkout", set match to "done" to indicate they want to proceed to delivery details.
+            - If their message is ambiguous or does not match any item, you must conclude there is no match.
+
+            You MUST respond in a valid JSON format with two keys:
+            1. "match": A string containing the exact item name from the provided list if a good match is found. If they want to proceed to delivery details, set this to "done". If no match is found, this MUST be the string "None".
+            2. "response": A short, friendly, conversational string to send back to the user. 
+               - If a match is found, confirm the item and ask for the quantity (e.g., "Classic Burger, great choice! How many would you like?").
+               - If they want to proceed (match is "done"), acknowledge and confirm moving to delivery details.
+               - If no match is found, politely tell the user you couldn't find that item and gently guide them by mentioning one or two other items from the list (e.g., "Hmm, I don't see 'Fren Frie' on our menu. We do have 'French Fries' and 'Classic Burger' though. Did you mean one of those?"). Be creative and vary your responses.
+            
+            Example of a good match response: {"match": "Classic Burger", "response": "Classic Burger, an excellent choice! How many would you like to order?"}
+            Example of a done response: {"match": "done", "response": "Perfect! Let's proceed with your delivery details."}
+            Example of a no-match response: {"match": "None", "response": "Sorry, I couldn't find 'sushi' on our menu today. Perhaps you'd like our popular Margherita Pizza instead?"}`
+            break;
+
+        case 'quantity_selection':
+            systemPrompt = `You are a friendly restaurant ordering assistant. The user has just selected a valid item and quantity. Your goal is to ask for the delivery date in a conversational way. For example: "Great! And when would you like that delivered? (e.g., YYYY-MM-DD)".`;
+            break;
+        case 'date_selection':
+            systemPrompt = `You are a friendly restaurant ordering assistant. The user has just provided a valid delivery date. Your goal is to ask them to select a part of the day and a specific time for delivery using the dropdowns provided. Keep it short and friendly.`;
+            break;
+        case 'time_selection':
+            systemPrompt = `You are a friendly restaurant ordering assistant. The user has just confirmed their delivery time. Your goal is to thank them and tell them you are preparing their order summary. Keep it short and positive.`;
+            break;
+        default:
+            systemPrompt = `You are a friendly and helpful AI assistant.`;
+    }
+
+    try {
+        const messages = [
+            { role: "system", content: systemPrompt },
+            ...chatHistory, // The previous turns of the conversation
+            { role: "user", content: userInput } // The user's latest message
+        ];
+
+        const completion = await groq.chat.completions.create({
+            messages: messages,
+            model: model, // MODIFIED: Uses the dynamically selected model
+            max_tokens: 200, // MODIFIED: Slightly increased for JSON
+            temperature: 0.7,
+            response_format: responseFormat, // MODIFIED: Applies JSON format when needed
+            stream: false
+        });
+
+        // MODIFIED: This entire block is new. It handles both JSON and plain text responses.
+        let aiResponse = completion.choices[0]?.message?.content;
+
+        if (currentStep === 'item_selection') {
+            // If we expect JSON, parse it and send the structured object back to the frontend
+            try {
+                const structuredResponse = JSON.parse(aiResponse);
+                res.json(structuredResponse);
+            } catch (jsonError) {
+                console.error("Failed to parse JSON response from LLM:", aiResponse);
+                // Send a graceful fallback if JSON parsing fails
+                res.status(500).json({
+                    error: "The AI response was not in the expected format. Please try again."
+                });
+            }
+        } else {
+            // For other steps, just send the plain text response
+            res.json({ response: aiResponse || "Let's continue!" });
+        }
+
+    } catch (error) {
+        console.error('❌ Conversational Order error:', error);
+        res.status(500).json({
+            error: 'Failed to generate a response',
+            details: error.message
+        });
+    }
+});
 // // Chat endpoint - answer questions using Groq
 // app.post('/chat', async (req, res) => {
 //     try {
@@ -583,58 +859,79 @@ app.get('/health', (req, res) => {
 // });
 
 // Document processing endpoint (PDF, Excel, CSV)
-app.post('/process_documents', upload.array('documents', 10), async (req, res) => {
+app.post('/process_documents', authenticateToken , upload.array('documents', 10), async (req, res) => {
     try {
         if (!req.files || req.files.length === 0) {
             return res.status(400).json({ error: 'No documents provided' });
         }
 
-        console.log(`📄 Processing ${req.files.length} document(s)...`);
-        
+        // Keep this line as it uses req.user.username from authentication
+        console.log(`📄 Processing ${req.files.length} document(s) for user: ${req.user.username}`);
+
+        // REMOVE THIS DUPLICATE LINE:
+        // console.log(`📄 Processing ${req.files.length} document(s)...`);
+
+
         let extractedText = '';
         let totalChunks = 0;
         let processedFiles = [];
+        // NEW: Initialize allStructuredCatalogData here
+        let allStructuredCatalogData = []; // This will collect structured data from all suitable files
 
         // Process each file based on its type
         for (const file of req.files) {
             console.log(`📖 Processing: ${file.originalname} (${file.mimetype})`);
             
             try {
-                let text = '';
-                
+                // Change 'text' to 'fileText' to avoid confusion if `convertExcelToText` etc. return objects
+                let fileText = '';
+                // NEW: Initialize fileStructuredData for each file
+                let fileStructuredData = [];
+
                 if (file.mimetype === 'application/pdf') {
-                    // Process PDF
-                    text = await new Promise((resolve, reject) => {
+                    // Process PDF (No change needed here for text extraction)
+                    fileText = await new Promise((resolve, reject) => {
                         let textItems = [];
                         
                         new PdfReader().parseBuffer(file.buffer, (err, item) => {
                             if (err) {
                                 reject(err);
                             } else if (!item) {
-                                // End of file
                                 resolve(textItems.join(' ').trim());
                             } else if (item.text) {
                                 textItems.push(item.text);
                             }
                         });
                     });
+                    // IMPORTANT: PDFs don't yield structured catalog data with this parser.
+                    // If you need structured data from PDF, it's a much more complex task
+                    // often involving advanced NLP or LLM calls on the raw PDF text.
+
                 } else if (file.mimetype.includes('excel') || file.originalname.endsWith('.xlsx') || file.originalname.endsWith('.xls')) {
-                    // Process Excel
-                    text = convertExcelToText(file.buffer);
+                    // Process Excel (will now return {text, structuredData})
+                    const result = convertExcelToText(file.buffer); // Your modified function
+                    fileText = result.text;
+                    fileStructuredData = result.structuredData; // Capture structured data
                 } else if (file.mimetype === 'text/csv' || file.mimetype === 'application/csv' || file.originalname.endsWith('.csv')) {
-                    // Process CSV
-                    text = await convertCsvToText(file.buffer);
+                    // Process CSV (will now return {text, structuredData})
+                    const result = await convertCsvToText(file.buffer); // Your modified function
+                    fileText = result.text;
+                    fileStructuredData = result.structuredData; // Capture structured data
                 } else {
                     throw new Error(`Unsupported file type: ${file.mimetype}`);
                 }
                 
-                if (text) {
-                    extractedText += `\n\n=== ${file.originalname} ===\n\n${text}`;
+                if (fileText) {
+                    extractedText += `\n\n=== ${file.originalname} ===\n\n${fileText}`;
                     processedFiles.push({
                         name: file.originalname,
                         type: file.mimetype,
                         status: 'success'
                     });
+                    // NEW: If structured data was found for this file, add it to the overall collection
+                    if (fileStructuredData.length > 0) {
+                        allStructuredCatalogData = allStructuredCatalogData.concat(fileStructuredData);
+                    }
                 } else {
                     console.warn(`⚠️ No content extracted from ${file.originalname}`);
                     processedFiles.push({
@@ -666,14 +963,20 @@ app.post('/process_documents', upload.array('documents', 10), async (req, res) =
             });
         }
 
-        // Store the extracted content
-        pdfContent = extractedText.trim();
-        isProcessed = true;
+        // Store the extracted content (text) globally
+        pdfContent = extractedText.trim(); // Your existing global variable for raw text
+        isProcessed = true; // Your existing global flag
+
+        // NEW: Store the collected structured catalog data globally
+        processedCatalogData = allStructuredCatalogData;
+        
         totalChunks = Math.ceil(pdfContent.length / 1000); // Approximate chunks
 
         console.log(`✅ Document processing completed!`);
         console.log(`📝 Extracted ${pdfContent.length} characters`);
         console.log(`📊 Created ~${totalChunks} text chunks`);
+        // NEW: Log the number of structured items found
+        console.log(`🍽️ Extracted ${processedCatalogData.length} structured catalog items.`);
 
         res.json({
             message: 'Documents processed successfully',
@@ -683,6 +986,8 @@ app.post('/process_documents', upload.array('documents', 10), async (req, res) =
             files_processed: req.files.length,
             processed_files: processedFiles,
             supported_formats: ['PDF', 'Excel (.xlsx, .xls)', 'CSV'],
+            // NEW: Include item names in the response for the frontend
+            item_names: processedCatalogData.map(item => item.item_name),
             timestamp: new Date().toISOString()
         });
 
@@ -696,12 +1001,95 @@ app.post('/process_documents', upload.array('documents', 10), async (req, res) =
     }
 });
 
+app.get('/get_catalog_items', authenticateToken, (req, res) => {
+    if (!isProcessed || processedCatalogData.length === 0) {
+        return res.status(400).json({ error: 'No catalog data processed yet. Please upload and process documents.' });
+    }
+    res.json({
+        items: processedCatalogData,
+        item_names: processedCatalogData.map(item => item.item_name),
+        timestamp: new Date().toISOString()
+    });
+});
+
+const readOrders = () => {
+    try {
+        if (!fs.existsSync(ORDERS_FILE)) {
+            fs.writeFileSync(ORDERS_FILE, '[]');
+        }
+        const data = fs.readFileSync(ORDERS_FILE, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        console.error('Error reading orders.json:', error);
+        return [];
+    }
+};
+
+const writeOrders = (orders) => {
+    fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2), 'utf8');
+};
+
+
+// NEW: Endpoint to submit an order
+// Inside app.post('/submit_order', authenticateToken, async (req, res) => { ... }
+app.post('/submit_order', authenticateToken, async (req, res) => {
+    // MODIFIED LINE: Add deliveryTime to destructuring
+    const { itemName, quantity, price, deliveryDate, partOfDay, deliveryTime } = req.body;
+    const { username, phone_number } = req.user;
+
+    // MODIFIED LINE: Add deliveryTime to validation
+    if (!itemName || !quantity || !price || !deliveryDate || !partOfDay || !deliveryTime) {
+        return res.status(400).json({ error: 'All order details are required.' });
+    }
+
+    try {
+        const orders = readOrders();
+        // ... (existing date/time formatting logic) ...
+        const IST_TIMEZONE = 'Asia/Kolkata'; // ADD THIS LINE
+
+            // Get current UTC date and convert to IST zoned date
+            const now = new Date();
+            const istDate = toZonedTime(now, IST_TIMEZONE);
+
+            // Format the IST zoned date into an ISO-like string with IST offset (+05:30)
+            // 'yyyy-MM-dd'T'HH:mm:ss.SSSXXX' is the format pattern (XXX gives +05:30)
+            const orderTimestampIST = format(istDate, "yyyy-MM-dd'T'HH:mm:ss.SSSXXX", { timeZone: IST_TIMEZONE });
+        const newOrder = {
+            order_id: uuidv4(),
+            customer_username: username,
+            customer_phone_number: phone_number,
+            item_name: itemName,
+            quantity: quantity,
+            price_per_item: price,
+            total_price: parseFloat((quantity * price).toFixed(2)),
+            delivery_date: deliveryDate,
+            part_of_day: partOfDay,
+            delivery_time: deliveryTime, // NEW: Store deliveryTime
+            order_timestamp: orderTimestampIST // Already getting this as IST
+        };
+
+        orders.push(newOrder);
+        writeOrders(orders);
+
+        console.log(`✅ Order submitted by ${username} for ${quantity} x ${itemName} at ${deliveryTime}. Order ID: ${newOrder.order_id}`);
+        res.status(201).json({
+            message: 'Order submitted successfully!',
+            order: newOrder
+        });
+
+    } catch (error) {
+        console.error('❌ Order submission error:', error);
+        res.status(500).json({ error: 'Failed to submit order', details: error.message });
+    }
+});
 // Backward compatibility endpoint for PDF processing
-app.post('/process_pdf', upload.array('pdf_docs', 10), async (req, res) => {
+app.post('/process_pdf', authenticateToken ,  upload.array('pdf_docs', 10), async (req, res) => {
     try {
         if (!req.files || req.files.length === 0) {
             return res.status(400).json({ error: 'No PDF files provided' });
         }
+
+        console.log(`📄 Processing ${req.files.length} PDF file(s) via legacy endpoint for user: ${req.user.username}`);
 
         console.log(`📄 Processing ${req.files.length} PDF file(s) via legacy endpoint...`);
         
@@ -839,13 +1227,15 @@ app.post('/spell_check', async (req, res) => {
 });
 
 // Answer question based on processed documents
-app.post('/answer_question', async (req, res) => {
+app.post('/answer_question',authenticateToken, async (req, res) => {
     try {
         const { user_question } = req.body;
 
         if (!user_question) {
             return res.status(400).json({ error: 'Question is required' });
         }
+
+         console.log(`❓ Original question from ${req.user.username}:`, user_question);
 
         if (!isProcessed || !pdfContent) {
             return res.status(400).json({ 
@@ -1002,7 +1392,7 @@ app.use((error, req, res, next) => {
 app.use((req, res) => {
     res.status(404).json({ 
         error: 'Endpoint not found',
-        availableEndpoints: ['/health', '/chat', '/context', '/process_documents', '/process_pdf', '/answer_question', '/spell_check', '/status'],
+        availableEndpoints: ['/health', '/chat', '/context', '/register', '/login', '/logout', '/conversational_order', '/process_documents', '/process_pdf', '/answer_question', '/spell_check', '/status'],
         timestamp: new Date().toISOString()
     });
 });
@@ -1017,10 +1407,14 @@ app.listen(PORT, () => {
     console.log(`  GET  /status           - API status`);
     console.log(`  POST /chat             - General chat`);
     console.log(`  POST /context          - Context-based Q&A`);
+    console.log(`  POST /register         - Register new user`);
+    console.log(`  POST /login            - Login user`);
+    console.log(`  POST /logout           - Logout user`);
     console.log(`  POST /process_documents - Process PDF, Excel, and CSV files`);
     console.log(`  POST /process_pdf       - Process PDF files (legacy)`);
     console.log(`  POST /answer_question  - Answer questions about processed documents`);
     console.log(`  POST /spell_check       - Test spell check and typo correction`);
+    console.log(`  POST /conversational_order - Get AI-driven conversational responses (Protected)`);
     console.log('\n📄 Supported file formats: PDF, Excel (.xlsx, .xls), CSV');
     console.log('✨ Ready to process documents and answer your questions!');
 });

@@ -9,17 +9,22 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.2",
     "compromise": "^14.14.4",
     "cors": "^2.8.5",
     "csv-parser": "^3.2.0",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
     "dotenv": "^16.3.1",
     "express": "^4.21.2",
     "fast-levenshtein": "^3.0.0",
     "fuzzball": "^2.2.2",
     "groq-sdk": "^0.30.0",
+    "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "pdfreader": "^3.0.7",
     "spelling-corrector": "^3.0.0",
+    "uuid": "^11.1.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

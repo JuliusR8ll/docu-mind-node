@@ -1,0 +1,26 @@
+[
+  {
+    "id": "1754676217051",
+    "username": "Suchir",
+    "phone_number": "9876543210",
+    "password": "$2b$10$088Q.z7YfDyfW/0p5ok/VeDZ9Bfadd8FolHAu4OKtTZU5B/abzkby"
+  },
+  {
+    "id": "1754765812691",
+    "username": "Kumar",
+    "phone_number": "8685939708",
+    "password": "$2b$10$KPCl.eyYNepWCqJ14H2.le4I8U7clcxWYabTQCEr4eS1Ce/JkjY4W"
+  },
+  {
+    "id": "1754766165578",
+    "username": "Rahul",
+    "phone_number": "9687542321",
+    "password": "$2b$10$/Am0P8/92OCgh0zBC1bGzubjPPQE3WRPbqcGxvARu0ChTFpXaUr8W"
+  },
+  {
+    "id": "1754846256527",
+    "username": "jojo",
+    "phone_number": "112",
+    "password": "$2b$10$vo.x1BWg0.JtdT.8tNSKDOenS4skNF4aCDFKvVKSgrUZjamkW7AJe"
+  }
+]
