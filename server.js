@@ -11,6 +11,7 @@ import path from 'path';
 import os from 'os';
 import levenshtein from 'fast-levenshtein';
 import nlp from 'compromise';
+import fetch from 'node-fetch';
 
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -586,6 +587,18 @@ app.get('/health', (req, res) => {
 });
 
 
+async function answerQuestionInternally(question, user) {
+    const response = await fetch(`http://localhost:${PORT}/answer_question`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${jwt.sign({ id: user.id, username: user.username }, JWT_SECRET)}`
+        },
+        body: JSON.stringify({ user_question: question })
+    });
+    return response.json();
+}
+
 app.post('/conversational_order', authenticateToken, async (req, res) => {
     const { chatHistory, currentStep, availableItems, userInput } = req.body;
 
@@ -593,8 +606,21 @@ app.post('/conversational_order', authenticateToken, async (req, res) => {
         return res.status(400).json({ error: 'Chat history, current step, and user input are required.' });
     }
 
+    // Check if the user is asking a question about the restaurant
+    const isRestaurantQuestion = /restaurant|location|hours|contact|about|chef|story|reservations|policies/i.test(userInput);
+
+    if (isRestaurantQuestion) {
+        try {
+            const answerResponse = await answerQuestionInternally(userInput, req.user);
+            return res.json({ response: answerResponse.answer });
+        } catch (error) {
+            console.error('Error answering restaurant question:', error);
+            return res.status(500).json({ error: 'Failed to answer question' });
+        }
+    }
+
     let systemPrompt;
-    let model = "llama-3.1-8b-instant"; 
+    let model = "llama-3.1-8b-instant";
     let responseFormat = null; 
 
     switch (currentStep) {
@@ -1056,7 +1082,34 @@ app.post('/spell_check', async (req, res) => {
     }
 });
 
-app.post('/answer_question',authenticateToken, async (req, res) => {
+let restaurantInfoContent = '';
+
+const loadRestaurantInfo = async () => {
+    try {
+        const pdfFilePath = path.join(__dirname, 'Restaurant_.pdf');
+        if (fs.existsSync(pdfFilePath)) {
+            const buffer = fs.readFileSync(pdfFilePath);
+            restaurantInfoContent = await new Promise((resolve, reject) => {
+                let textItems = [];
+                new PdfReader().parseBuffer(buffer, (err, item) => {
+                    if (err) {
+                        reject(err);
+                    } else if (!item) {
+                        resolve(textItems.join(' ').trim());
+                    } else if (item.text) {
+                        textItems.push(item.text);
+                    }
+                });
+            });
+            console.log('✅ Restaurant info loaded from restaurant_info.pdf');
+        } else {
+            console.warn('⚠️ restaurant_info.pdf not found. Restaurant info will be empty.');
+        }
+    } catch (error) {
+        console.error('❌ Error loading restaurant info:', error);
+    }
+};
+app.post('/answer_question', authenticateToken, async (req, res) => {
     try {
         const { user_question } = req.body;
 
@@ -1064,19 +1117,11 @@ app.post('/answer_question',authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'Question is required' });
         }
 
-         console.log(`❓ Original question from ${req.user.username}:`, user_question);
+        console.log(`❓ Original question from ${req.user.username}:`, user_question);
 
-        if (!isProcessed || !pdfContent) {
-            return res.status(400).json({
-                error: 'No document content available. Please process documents first.' 
-            });
-        }
-
-        console.log('❓ Original question:', user_question);
-        
         const spellCheck = correctSpelling(user_question);
         const correctedQuestion = spellCheck.corrected;
-        
+
         if (spellCheck.hasCorrections) {
             console.log('🔧 Spell corrections applied:');
             spellCheck.corrections.forEach(correction => {
@@ -1084,28 +1129,34 @@ app.post('/answer_question',authenticateToken, async (req, res) => {
             });
             console.log('❓ Corrected question:', correctedQuestion);
         }
-        
-        console.log('📄 Using document content length:', pdfContent.length);
 
-        const prompt = `You are a helpful assistant that answers questions based on provided document content. The content may include PDF text, Excel spreadsheets, or CSV data.
+        // Determine context based on question
+        const isRestaurantQuestion = /restaurant|location|hours|contact|about/i.test(correctedQuestion);
+        
+        let context = '';
+        if (isRestaurantQuestion) {
+            context = restaurantInfoContent;
+        } else {
+            context = pdfContent;
+        }
+
+        if (!context) {
+            return res.status(400).json({
+                error: 'No relevant document content available. Please process documents first.'
+            });
+        }
+
+        console.log('📄 Using document content length:', context.length);
+
+        const prompt = `You are a helpful assistant that answers questions based on provided document content.
 
 INSTRUCTIONS:
-1. Answer the question accurately based ONLY on the provided context
-2. If the answer is not in the context, clearly state "The answer is not available in the provided document"
-3. Be concise but complete in your response
-4. For spreadsheet data (Excel/CSV):
-   - Analyze the data structure and relationships
-   - Provide insights about trends, patterns, or specific values
-   - Reference specific rows, columns, or cells when relevant
-   - Calculate totals, averages, or other metrics if requested
-5. For PDF content:
-   - Quote relevant parts from the document when helpful
-   - Maintain the original meaning and context
-6. If the question is ambiguous, ask for clarification
-7. If asked for data analysis, provide clear explanations of your findings
+1. Answer the question accurately based ONLY on the provided context.
+2. If the answer is not in the context, clearly state "The answer is not available in the provided document."
+3. Be concise but complete in your response.
 
 CONTEXT:
-${pdfContent}
+${context}
 
 QUESTION: ${correctedQuestion}
 
@@ -1113,7 +1164,7 @@ ANSWER:`;
 
         let completion;
         let modelUsed;
-        
+
         try {
             completion = await groq.chat.completions.create({
                 messages: [
@@ -1129,7 +1180,7 @@ ANSWER:`;
             modelUsed = "llama-3.3-70b-versatile";
         } catch (error) {
             console.log('⚠️ Primary model failed, trying fallback:', error.message);
-            
+
             completion = await groq.chat.completions.create({
                 messages: [
                     {
@@ -1145,7 +1196,7 @@ ANSWER:`;
         }
 
         const answer = completion.choices[0]?.message?.content || "I apologize, but I couldn't generate an answer to your question.";
-        
+
         console.log('✅ Answer generated using:', modelUsed);
         console.log('📤 Answer preview:', answer.substring(0, 150) + '...');
 
@@ -1153,10 +1204,10 @@ ANSWER:`;
             answer: answer,
             ai_provider: 'Groq',
             model: modelUsed,
-            content_length: pdfContent.length,
+            content_length: context.length,
             timestamp: new Date().toISOString()
         };
-        
+
         if (spellCheck.hasCorrections) {
             response.spell_check = {
                 original_question: user_question,
@@ -1165,7 +1216,7 @@ ANSWER:`;
                 note: 'Your question contained some typos that were automatically corrected.'
             };
         }
-        
+
         res.json(response);
 
     } catch (error) {
@@ -1220,6 +1271,7 @@ app.use((req, res) => {
 
 app.listen(PORT, async () => {
     await loadCatalog();
+    await loadRestaurantInfo();
     console.log(`🚀 Docu-Mind Backend Server Started on http://localhost:${PORT}`);
 });
 
