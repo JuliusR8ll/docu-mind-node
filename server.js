@@ -600,7 +600,7 @@ async function answerQuestionInternally(question, user) {
 }
 
 app.post('/conversational_order', authenticateToken, async (req, res) => {
-    const { chatHistory, currentStep, availableItems, userInput } = req.body;
+    const { chatHistory, currentStep, availableItems, userInput, cart } = req.body;
 
     if (!chatHistory || !currentStep || !userInput) {
         return res.status(400).json({ error: 'Chat history, current step, and user input are required.' });
@@ -649,6 +649,27 @@ Analyze the user's last message.
             Example of a no-match response: {"match": "None", "response": "Sorry, I couldn't find 'sushi' on our menu today. Perhaps you'd like our popular Margherita Pizza instead?"}`
             break;
 
+        case 'modify_quantity':
+            model = "llama-3.3-70b-versatile";
+            responseFormat = { type: "json_object" };
+            
+            // This prompt is specifically for extracting the item and new quantity
+            systemPrompt = `You are an AI assistant analyzing a user's request to change an item's quantity in their shopping cart.
+            The user's current cart contains these items: [${cart.map(item => `"${item.itemName}"`).join(', ')}].
+            The user's request is: "${userInput}".
+
+            Your task is to identify which item from the cart the user wants to modify and what the new quantity is.
+
+            You MUST respond in a valid JSON format with two keys:
+            1. "item": A string containing the exact item name from the cart that the user wants to change. If you cannot determine the item, this MUST be the string "None".
+            2. "quantity": A number representing the new quantity. If you cannot determine the quantity, this MUST be 0.
+            
+            Example user input "make the burger 3": {"item": "Classic Burger", "quantity": 3}
+            Example user input "i need 2 fries": {"item": "French Fries", "quantity": 2}
+            Example user input "change it to 4": {"item": "None", "quantity": 4} (Ambiguous item)
+            Example user input "just the burger": {"item": "Classic Burger", "quantity": 0} (Ambiguous quantity)`;
+         break;    
+
         case 'quantity_selection':
             systemPrompt = `You are a friendly restaurant ordering assistant. The user has just selected a valid item and quantity. Your goal is to ask for the delivery date in a conversational way. For example: "Great! And when would you like that delivered? (e.g., YYYY-MM-DD)".`;
             break;
@@ -672,7 +693,7 @@ Analyze the user's last message.
         const completion = await groq.chat.completions.create({
             messages: messages,
             model: model, 
-            max_tokens: 200, 
+            max_tokens: 250, 
             temperature: 0.7,
             response_format: responseFormat, 
             stream: false
@@ -680,19 +701,19 @@ Analyze the user's last message.
 
         let aiResponse = completion.choices[0]?.message?.content;
 
-        if (currentStep === 'item_selection') {
-            try {
-                const structuredResponse = JSON.parse(aiResponse);
-                res.json(structuredResponse);
-            } catch (jsonError) {
-                console.error("Failed to parse JSON response from LLM:", aiResponse);
-                res.status(500).json({
-                    error: "The AI response was not in the expected format. Please try again."
-                });
-            }
-        } else {
-            res.json({ response: aiResponse || "Let's continue!" });
-        }
+        if (currentStep === 'item_selection' || currentStep === 'modify_quantity') {
+     try {
+         const structuredResponse = JSON.parse(aiResponse);
+         res.json(structuredResponse);
+     } catch (jsonError) {
+         console.error("Failed to parse JSON response from LLM:", aiResponse);
+         res.status(500).json({
+             error: "The AI response was not in the expected format. Please try again."
+         });
+     }
+ } else {
+     res.json({ response: aiResponse || "Let's continue!" });
+ }
 
     } catch (error) {
         console.error('❌ Conversational Order error:', error);
