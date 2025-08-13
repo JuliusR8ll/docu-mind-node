@@ -640,7 +640,10 @@ app.post('/conversational_order', authenticateToken, async (req, res) => {
     if (isRestaurantQuestion) {
         try {
             const answerResponse = await answerQuestionInternally(userInput, req.user);
-            return res.json({ response: answerResponse.answer });
+            return res.json({ 
+                response: answerResponse.answer,
+                match: 'question'
+            });
         } catch (error) {
             console.error('Error answering restaurant question:', error);
             return res.status(500).json({ error: 'Failed to answer question' });
@@ -732,6 +735,17 @@ Analyze the user's last message.
         if (currentStep === 'item_selection' || currentStep === 'modify_quantity') {
      try {
          const structuredResponse = JSON.parse(aiResponse);
+         if (currentStep === 'item_selection' && !structuredResponse.response) {
+            structuredResponse.response = "I'm not sure what you mean. Please try again.";
+         }
+         if (currentStep === 'modify_quantity') {
+            if (!structuredResponse.item) {
+                structuredResponse.item = "None";
+            }
+            if (!structuredResponse.quantity) {
+                structuredResponse.quantity = 0;
+            }
+         }
          res.json(structuredResponse);
      } catch (jsonError) {
          console.error("Failed to parse JSON response from LLM:", aiResponse);
@@ -1193,7 +1207,7 @@ app.post('/answer_question', authenticateToken, async (req, res) => {
         }
 
         // Determine context based on question
-        const isRestaurantQuestion = /restaurant|location|hours|contact|about/i.test(correctedQuestion);
+        const isRestaurantQuestion = /restaurant|location|hours|contact|about|chef|story|reservations|policies/i.test(correctedQuestion);
         
         let context = '';
         if (isRestaurantQuestion) {
@@ -1214,7 +1228,7 @@ app.post('/answer_question', authenticateToken, async (req, res) => {
 
 INSTRUCTIONS:
 1. Answer the question accurately based ONLY on the provided context.
-2. If the answer is not in the context, clearly state "The answer is not available in the provided document."
+2. If the answer is not in the context, clearly state "I'm sorry, I don't have that information."
 3. Be concise but complete in your response.
 
 CONTEXT:
