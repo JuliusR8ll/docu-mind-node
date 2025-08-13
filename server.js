@@ -1107,7 +1107,7 @@ let restaurantInfoContent = '';
 
 const loadRestaurantInfo = async () => {
     try {
-        const pdfFilePath = path.join(__dirname, 'Restaurant_.pdf');
+        const pdfFilePath = path.join(__dirname, '_Restaurant_.pdf');
         if (fs.existsSync(pdfFilePath)) {
             const buffer = fs.readFileSync(pdfFilePath);
             restaurantInfoContent = await new Promise((resolve, reject) => {
