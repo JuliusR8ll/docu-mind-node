@@ -1,0 +1,8 @@
+DayOfWeek,OpenTime,CloseTime
+Monday,closed,closed
+Tuesday,17:00,22:00
+Wednesday,17:00,22:00
+Thursday,17:00,23:00
+Friday,17:00,23:00
+Saturday,12:00,23:00
+Sunday,12:00,21:00

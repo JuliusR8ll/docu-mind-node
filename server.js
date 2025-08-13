@@ -22,6 +22,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 import { toZonedTime } from 'date-fns-tz';
 import { format } from 'date-fns';
+import { loadSchedule , validateDate , validateTime} from './scheduleService.js'
 
 dotenv.config();
 
@@ -39,6 +40,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'supersecretjwtkeythatshouldbeveryl
 
 const USERS_FILE = path.join(__dirname, 'users.json');
 const ORDERS_FILE = path.join(__dirname, 'orders.json');
+
 
 let processedCatalogData = [];
 
@@ -59,6 +61,8 @@ const writeUsers = (users) => {
     fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
 };
 
+
+
 function convertExcelToText(buffer) {
     try {
         const workbook = XLSX.read(buffer, { type: 'buffer' });
@@ -70,15 +74,11 @@ function convertExcelToText(buffer) {
             const jsonData = XLSX.utils.sheet_to_json(sheet);
             
             if (jsonData.length === 0) {
-                text += `{"sheet":"${sheetName}","note":"empty"}
-`;
+                text += `{"sheet":"${sheetName}","note":"empty"}`;
             } else {
-                text += `
-=== Sheet: ${sheetName} ===
-`;
+                text += `=== Sheet: ${sheetName} ===`;
                 jsonData.forEach((row, index) => {
-                    text += `Row ${index + 1}: ${JSON.stringify(row)}
-`;
+                    text += `Row ${index + 1}: ${JSON.stringify(row)}`;
                     
                     const itemName = row['Item Name'] || row['item'] || row['Item'];
                     const price = parseFloat(row['Price']) || parseFloat(row['price']) || 0;
@@ -94,7 +94,6 @@ function convertExcelToText(buffer) {
                 });
             }
         });
-
         return { text, structuredData }; 
     } catch (err) {
         throw new Error('Failed to read Excel file: ' + err.message);
@@ -115,8 +114,7 @@ function convertCsvToText(buffer) {
                 .pipe(csv())
                 .on('data', (row) => {
                     rowCount++;
-                    text += `Row ${rowCount}: ${JSON.stringify(row)}
-`;
+                    text += `Row ${rowCount}: ${JSON.stringify(row)}`;
 
                     const itemName = row['item_name'];
                     const price = parseFloat(row['price']);
@@ -574,6 +572,36 @@ app.post('/logout', authenticateToken, (req, res) => {
     res.json({ message: 'Logged out successfully!' });
 });
 
+app.post('/validate_delivery_date', authenticateToken, (req, res) => {
+    const { date } = req.body;
+    if (!date) {
+        return res.status(400).json({ isValid: false, message: 'Date is required.' });
+    }
+    
+    try {
+        const result = validateDate(date);
+        res.json(result);
+    } catch (error) {
+        console.error('Date validation error:', error);
+        res.status(500).json({ isValid: false, message: 'An error occurred while validating the date.' });
+    }
+});
+
+app.post('/validate_delivery_time', authenticateToken, (req, res) => {
+    const { time, dayOfWeek } = req.body;
+    if (!time || !dayOfWeek) {
+        return res.status(400).json({ isValid: false, message: 'Time and Day of Week are required.' });
+    }
+
+    try {
+        const result = validateTime(time, dayOfWeek);
+        res.json(result);
+    } catch (error) {
+        console.error('Time validation error:', error);
+        res.status(500).json({ isValid: false, message: 'An error occurred while validating the time.' });
+    }
+})
+
 app.get('/health', (req, res) => {
     res.json({
         status: 'healthy',
@@ -894,6 +922,19 @@ app.post('/submit_order', authenticateToken, async (req, res) => {
     }
 
     try {
+
+        const dateValidationResult = validateDate(deliveryDate);
+        if (!dateValidationResult.isValid) {
+            // Provide the specific reason for failure
+            return res.status(400).json({ error: dateValidationResult.message });
+        }
+
+        // We use the dayOfWeek from the successful date validation
+        const timeValidationResult = validateTime(deliveryTime, dateValidationResult.dayOfWeek);
+        if (!timeValidationResult.isValid) {
+            // Provide the specific reason for failure
+            return res.status(400).json({ error: timeValidationResult.message });
+        }
         // --- NEW: Transaction-like validation block ---
         // First, check if all items are in stock before making any changes.
         for (const cartItem of cart) {
@@ -1293,6 +1334,7 @@ app.use((req, res) => {
 app.listen(PORT, async () => {
     await loadCatalog();
     await loadRestaurantInfo();
+    await loadSchedule();
     console.log(`🚀 Docu-Mind Backend Server Started on http://localhost:${PORT}`);
 });
 
