@@ -17,6 +17,10 @@ let scheduleData = null;
  * object format for quick lookups.
  * @returns {Promise<object>} A promise that resolves with the schedule object.
  */
+// In scheduleService.js
+
+// REPLACE the entire old loadSchedule function with this one
+
 export const loadSchedule = () => {
     return new Promise((resolve, reject) => {
         if (scheduleData) {
@@ -31,15 +35,32 @@ export const loadSchedule = () => {
 
         const schedule = {};
         fs.createReadStream(SCHEDULE_FILE)
-            .pipe(csv())
+            // === THIS IS THE FIX: Trim headers and ensure they are what we expect ===
+            .pipe(csv({
+                mapHeaders: ({ header }) => header.trim() // Trims whitespace from headers
+            }))
             .on('data', (row) => {
-                schedule[row.DayOfWeek] = {
-                    OpenTime: row.OpenTime,
-                    CloseTime: row.CloseTime,
-                };
+                // Defensive check to ensure the 'DayOfWeek' column exists
+                if (row.DayOfWeek) {
+                    schedule[row.DayOfWeek.toLowerCase()] = {
+                        OpenTime: row.OpenTime,
+                        CloseTime: row.CloseTime,
+                    };
+                } else {
+                    console.warn("CSV row is missing 'DayOfWeek' column:", row);
+                }
             })
             .on('end', () => {
+                // Defensive check to ensure we actually loaded something
+                if (Object.keys(schedule).length === 0) {
+                    const errorMessage = "FATAL ERROR: Restaurant schedule loaded, but is empty. Check restaurant_schedule.csv format.";
+                    console.error(errorMessage);
+                    console.error("Expected headers: DayOfWeek,OpenTime,CloseTime");
+                    return reject(new Error(errorMessage));
+                }
+                
                 console.log('✅ Restaurant schedule loaded successfully.');
+                console.log('Loaded schedule data:', schedule); // Added for debugging, you can remove later
                 scheduleData = schedule;
                 resolve(scheduleData);
             })
@@ -62,6 +83,8 @@ const formatToAMPM = (timeString) => {
  * @param {string} dateInput - e.g., "2024-07-29", "tomorrow"
  * @returns {object} An object with validation status, day of the week, and a message.
  */
+// This is the CORRECTED code for scheduleService.js
+
 export const validateDate = (dateInput) => {
     let targetDate;
     try {
@@ -70,13 +93,17 @@ export const validateDate = (dateInput) => {
     } catch (e) {
         return {
             isValid: false,
-            message: "Sorry, I didn't understand that date. Please try a format like YYYY-MM-DD or a day like 'tomorrow'."
+            message: "Sorry, I didn't understand that date. Please try a format like YYYY-MM-DD."
         };
     }
 
-    const dayOfWeek = format(targetDate, 'EEEE'); // e.g., "Tuesday"
-    const daySchedule = scheduleData[dayOfWeek];
+    const dayOfWeek = format(targetDate, 'EEEE'); // This still produces "Tuesday"
+    
+    // --- THIS IS THE FIX ---
+    // Convert the generated day name to lowercase before looking it up in our data.
+    const daySchedule = scheduleData[dayOfWeek.toLowerCase()];
 
+    // Now the lookup will be scheduleData['tuesday'], which will work correctly.
     if (!daySchedule || daySchedule.OpenTime.toLowerCase() === 'closed') {
         return {
             isValid: false,
@@ -87,7 +114,7 @@ export const validateDate = (dateInput) => {
 
     return {
         isValid: true,
-        dayOfWeek: dayOfWeek,
+        dayOfWeek: dayOfWeek, // We can still return the nicely formatted "Tuesday" to the user
         message: `Great, we are open on ${dayOfWeek}s!`,
     };
 };
@@ -98,12 +125,40 @@ export const validateDate = (dateInput) => {
  * @param {string} dayOfWeek - e.g., "Tuesday"
  * @returns {object} An object with validation status and a message.
  */
-export const validateTime = (timeInput, dayOfWeek) => {
-    if (!scheduleData || !scheduleData[dayOfWeek]) {
-        return { isValid: false, message: `Could not find schedule for ${dayOfWeek}.` };
-    }
-    const daySchedule = scheduleData[dayOfWeek];
+// In scheduleService.js
 
+// REPLACE the entire old validateTime function with this one
+
+export const validateTime = (timeInput, dayOfWeek) => {
+    // --- Start of Robust Debugging ---
+    console.log(`[Time Validation] Received request for day: "${dayOfWeek}" at time: "${timeInput}"`);
+
+    // Check if the main schedule data exists at all
+    if (!scheduleData || Object.keys(scheduleData).length === 0) {
+        console.error("[Time Validation] CRITICAL ERROR: scheduleData object is empty or null.");
+        return { isValid: false, message: 'Server error: Restaurant schedule is not loaded.' };
+    }
+    
+    // Defensive check: ensure dayOfWeek is a non-empty string before using methods on it
+    if (typeof dayOfWeek !== 'string' || !dayOfWeek) {
+        console.error(`[Time Validation] ERROR: dayOfWeek is not a valid string. Received: ${dayOfWeek}`);
+        return { isValid: false, message: 'A valid day of the week is required.' };
+    }
+    // --- End of Robust Debugging ---
+
+    const lowerCaseDay = dayOfWeek.toLowerCase();
+    const daySchedule = scheduleData[lowerCaseDay];
+
+    // Log what we found (or didn't find)
+    if (daySchedule) {
+        console.log(`[Time Validation] Found schedule for key "${lowerCaseDay}":`, daySchedule);
+    } else {
+        console.error(`[Time Validation] FAILED to find schedule for key "${lowerCaseDay}"`);
+        console.error(`[Time Validation] Available keys are: [${Object.keys(scheduleData).join(', ')}]`);
+        return { isValid: false, message: `Could not find schedule for ${dayOfWeek}. Please check server logs.` };
+    }
+
+    // The rest of the validation logic
     let militaryTime;
     try {
         const parsedDate = new Date(`1/1/2000 ${timeInput}`);
@@ -113,18 +168,21 @@ export const validateTime = (timeInput, dayOfWeek) => {
         return {
             isValid: false,
             message: "I'm sorry, I didn't catch that time. Please use a format like '7:30 PM' or '19:30'."
-        }
+        };
     }
 
     if (militaryTime >= daySchedule.OpenTime && militaryTime <= daySchedule.CloseTime) {
+        console.log(`[Time Validation] SUCCESS: ${militaryTime} is within ${daySchedule.OpenTime}-${daySchedule.CloseTime}.`);
         return {
             isValid: true,
             formattedTime: militaryTime,
             message: 'Perfect, that time works for us.',
         };
     } else {
+        const formatToAMPM = (time) => format(new Date(`1/1/2000 ${time}`), 'h:mm a');
         const open = formatToAMPM(daySchedule.OpenTime);
         const close = formatToAMPM(daySchedule.CloseTime);
+        console.log(`[Time Validation] FAILED: ${militaryTime} is NOT within ${daySchedule.OpenTime}-${daySchedule.CloseTime}.`);
         return {
             isValid: false,
             message: `I'm sorry, but on ${dayOfWeek}s our hours are from ${open} to ${close}. Please choose a time within that range.`,

@@ -659,25 +659,34 @@ app.post('/conversational_order', authenticateToken, async (req, res) => {
             model = "llama-3.3-70b-versatile";
             responseFormat = { type: "json_object" };
 
-            systemPrompt = `You are a smart and friendly restaurant ordering assistant. Your task is to intelligently match the user's input to an item from the menu, even if there are typos or it's a partial match.
-            
-The user wants to order an item. Here is the list of available items: [${availableItems.join(', ')}].
+            // === THIS IS THE NEW, UPGRADED PROMPT ===
+            systemPrompt = `You are an intelligent restaurant ordering assistant. Your task is to parse the user's request and determine their intent.
+- The available menu items are: [${availableItems.join(', ')}].
+- The user's current cart contains: [${cart.map(item => `"${item.itemName}"`).join(', ')}].
 
-Analyze the user's last message.
-- If their message clearly refers to one of the items in the list (e.g., "Classic" should match "Classic Burger", "Fren Frie" should match "French Fries"), identify the best match.
-- If their message contains words like "done", "proceed", "finished", "complete", or "checkout", set match to "done" to indicate they want to proceed to delivery details.
-- If their message is ambiguous or does not match any item, you must conclude there is no match.
+Analyze the user's last message and determine one of the following five actions. You MUST respond in a valid JSON format.
 
-            You MUST respond in a valid JSON format with two keys:
-            1. "match": A string containing the exact item name from the provided list if a good match is found. If they want to proceed to delivery details, set this to "done". If no match is found, this MUST be the string "None".
-            2. "response": A short, friendly, conversational string to send back to the user. 
-               - If a match is found, confirm the item and ask for the quantity (e.g., "Classic Burger, great choice! How many would you like?").
-               - If they want to proceed (match is "done"), acknowledge and confirm moving to delivery details.
-               - If no match is found, politely tell the user you couldn't find that item and gently guide them by mentioning one or two other items from the list (e.g., "Hmm, I don't see 'Fren Frie' on our menu. We do have 'French Fries' and 'Classic Burger' though. Did you mean one of those?" Be creative and vary your responses.
-            
-            Example of a good match response: {"match": "Classic Burger", "response": "Classic Burger, an excellent choice! How many would you like to order?"}
-            Example of a done response: {"match": "done", "response": "Perfect! Let's proceed with your delivery details."}
-            Example of a no-match response: {"match": "None", "response": "Sorry, I couldn't find 'sushi' on our menu today. Perhaps you'd like our popular Margherita Pizza instead?"}`
+1.  **add_item**: This is for when the user wants to add a new item from the menu to their cart.
+    - Example user input: "I'll have the classic burger", "pizza please"
+    - Your JSON output MUST be: { "action": "add_item", "item_name": "Classic Burger", "response": "Classic Burger, great choice! How many would you like?" }
+
+2.  **remove_item**: This is for when the user wants to remove a specific item THAT IS CURRENTLY IN THEIR CART.
+    - Example user input: "remove the burger", "I don't want fries anymore"
+    - Your JSON output MUST be: { "action": "remove_item", "item_name": "Classic Burger", "response": "You want to remove Classic Burger from your cart. Is that correct? (Type 'yes' or 'no')" }
+
+3.  **clear_cart**: This is for when the user wants to remove ALL items from their cart.
+    - Example user input: "clear my cart", "remove everything", "start over"
+    - Your JSON output MUST be: { "action": "clear_cart", "response": "Are you sure you want to remove all items from your cart? (Type 'yes' or 'no')" }
+
+4.  **proceed_to_checkout**: This is for when the user is finished adding items and wants to continue with their order.
+    - Example user input: "done", "that's all", "checkout", "proceed"
+    - Your JSON output MUST be: { "action": "proceed_to_checkout", "response": "Perfect! Let's get your delivery details." }
+
+5.  **no_match**: Use this if the user's request is ambiguous or does not match any of the other actions.
+    - Example user input: "what's the weather like?", "do you have sushi?"
+    - Your JSON output MUST be: { "action": "no_match", "response": "Sorry, I couldn't find that on our menu. We have items like Margherita Pizza and French Fries." }
+
+Your final response must be a single JSON object with two required keys: "action" (one of the five action names above) and "response" (a friendly string for the user). If the action is 'add_item' or 'remove_item', you MUST also include the "item_name" key.`;
             break;
 
         case 'modify_quantity':
