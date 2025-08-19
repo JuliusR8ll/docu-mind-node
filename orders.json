@@ -480,5 +480,32 @@
     "part_of_day": "Evening",
     "delivery_time": "19:00",
     "order_timestamp": "2025-08-19T12:03:05.164+05:30"
+  },
+  {
+    "order_id": "ce1ced91-666c-4896-9c1e-ba38bf79f297",
+    "customer_username": "Suchir",
+    "customer_phone_number": "9876543210",
+    "items": [
+      {
+        "item_name": "Classic Burger",
+        "quantity": 1,
+        "price_per_item": 12.99
+      },
+      {
+        "item_name": "Bottled Water",
+        "quantity": 1,
+        "price_per_item": 1.75
+      },
+      {
+        "item_name": "French Fries",
+        "quantity": 1,
+        "price_per_item": 3.5
+      }
+    ],
+    "total_price": 18.24,
+    "delivery_date": "2025-08-20",
+    "part_of_day": "Evening",
+    "delivery_time": "20:00",
+    "order_timestamp": "2025-08-19T12:59:31.824+05:30"
   }
 ]
