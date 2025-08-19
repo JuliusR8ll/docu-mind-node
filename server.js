@@ -670,19 +670,24 @@ Analyze the user's last message and determine one of the following five actions.
     - Example user input: "I'll have the classic burger", "pizza please"
     - Your JSON output MUST be: { "action": "add_item", "item_name": "Classic Burger", "response": "Classic Burger, great choice! How many would you like?" }
 
-2.  **remove_item**: This is for when the user wants to remove a specific item THAT IS CURRENTLY IN THEIR CART.
+2.  **modify_item**: User wants to change the quantity of an item ALREADY IN THEIR CART.
+    - If the item or quantity is ambiguous, set the missing value to "None" or 0.
+    - User Input: "change classic burger to 2" -> JSON: { "action": "modify_item", "item_name": "Classic Burger", "quantity": 2 }
+    - User Input: "make it 3" -> JSON: { "action": "modify_item", "item_name": "None", "quantity": 3 }
+
+3.  **remove_item**: This is for when the user wants to remove a specific item THAT IS CURRENTLY IN THEIR CART.
     - Example user input: "remove the burger", "I don't want fries anymore"
     - Your JSON output MUST be: { "action": "remove_item", "item_name": "Classic Burger", "response": "You want to remove Classic Burger from your cart. Is that correct? (Type 'yes' or 'no')" }
 
-3.  **clear_cart**: This is for when the user wants to remove ALL items from their cart.
+4.  **clear_cart**: This is for when the user wants to remove ALL items from their cart.
     - Example user input: "clear my cart", "remove everything", "start over"
     - Your JSON output MUST be: { "action": "clear_cart", "response": "Are you sure you want to remove all items from your cart? (Type 'yes' or 'no')" }
 
-4.  **proceed_to_checkout**: This is for when the user is finished adding items and wants to continue with their order.
+5.  **proceed_to_checkout**: This is for when the user is finished adding items and wants to continue with their order.
     - Example user input: "done", "that's all", "checkout", "proceed"
     - Your JSON output MUST be: { "action": "proceed_to_checkout", "response": "Perfect! Let's get your delivery details." }
 
-5.  **no_match**: Use this if the user's request is ambiguous or does not match any of the other actions.
+6.  **no_match**: Use this if the user's request is ambiguous or does not match any of the other actions.
     - Example user input: "what's the weather like?", "do you have sushi?"
     - Your JSON output MUST be: { "action": "no_match", "response": "Sorry, I couldn't find that on our menu. We have items like Margherita Pizza and French Fries." }
 
@@ -825,11 +830,7 @@ app.post('/process_documents', authenticateToken , upload.array('documents', 10)
                 }
                 
                 if (fileText) {
-                    extractedText += `
-
-=== ${file.originalname} ===
-
-${fileText}`;
+                    extractedText += `=== ${file.originalname} === ${fileText}`;
                     processedFiles.push({
                         name: file.originalname,
                         type: file.mimetype,
@@ -1062,11 +1063,7 @@ app.post('/process_pdf', authenticateToken ,  upload.array('pdf_docs', 10), asyn
                 });
                 
                 if (text) {
-                    extractedText += `
-
-=== ${file.originalname} ===
-
-${text}`;
+                    extractedText += `=== ${file.originalname} === ${text}`;
                     processedFiles.push({
                         name: file.originalname,
                         type: file.mimetype,
@@ -1194,6 +1191,8 @@ const loadRestaurantInfo = async () => {
         console.error('❌ Error loading restaurant info:', error);
     }
 };
+
+
 app.post('/answer_question', authenticateToken, async (req, res) => {
     try {
         const { user_question } = req.body;
