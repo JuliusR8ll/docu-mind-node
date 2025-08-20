@@ -615,17 +615,55 @@ app.get('/health', (req, res) => {
 });
 
 
-async function answerQuestionInternally(question, user) {
+async function answerQuestionInternally(question, user , availableItems) {
     const response = await fetch(`http://localhost:${PORT}/answer_question`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${jwt.sign({ id: user.id, username: user.username }, JWT_SECRET)}`
         },
-        body: JSON.stringify({ user_question: question })
+        body: JSON.stringify({ 
+            user_question: question ,
+            availableItems: availableItems
+        })
     });
     return response.json();
 }
+
+const isRestaurantQuestion = (userInput, availableItems) => {
+  const lowerInput = userInput.toLowerCase();
+
+  const generalKeywords = [
+    'restaurant', 'location', 'hours', 'contact', 'about', 'chef', 
+    'story', 'reservations', 'policies', 'address', 'phone'
+  ];
+  const generalRegex = new RegExp(`\\b(${generalKeywords.join('|')})\\b`, 'i');
+  if (generalRegex.test(lowerInput)) {
+    return true;
+  }
+
+  const questionKeywords = [
+    'what', 'why', 'who', 'how', 'which', 'is', 'are', 'does', 
+    'do', 'can', 'should', 'tell me', 'any'
+  ];
+  
+  
+  const menuItemWords = new Set(
+    availableItems
+      .flatMap(item => item.toLowerCase().split(' ')) 
+      .filter(word => word.length > 2) 
+  );
+
+  const hasQuestionWord = questionKeywords.some(kw => lowerInput.includes(kw));
+  const hasMenuItemWord = [...menuItemWords].some(itemWord => lowerInput.includes(itemWord));
+  
+  if (hasQuestionWord && hasMenuItemWord) {
+    return true;
+  }
+
+  return false;
+};
+
 
 app.post('/conversational_order', authenticateToken, async (req, res) => {
     const { chatHistory, currentStep, availableItems, userInput, cart } = req.body;
@@ -633,16 +671,18 @@ app.post('/conversational_order', authenticateToken, async (req, res) => {
     if (!chatHistory || !currentStep || !userInput) {
         return res.status(400).json({ error: 'Chat history, current step, and user input are required.' });
     }
+    
+   
+    console.log('logged here')
+    const isQuestion = isRestaurantQuestion(userInput, availableItems);
 
-    // Check if the user is asking a question about the restaurant
-    const isRestaurantQuestion = /restaurant|location|hours|contact|about|chef|story|reservations|policies/i.test(userInput);
-
-    if (isRestaurantQuestion) {
+    console.log(isQuestion)
+    if (isQuestion) {
         try {
-            const answerResponse = await answerQuestionInternally(userInput, req.user);
+            const answerResponse = await answerQuestionInternally(userInput, req.user, availableItems);
             return res.json({ 
-                response: answerResponse.answer,
-                match: 'question'
+                action : 'answer_question',
+                response: answerResponse.answer
             });
         } catch (error) {
             console.error('Error answering restaurant question:', error);
@@ -1196,7 +1236,7 @@ const loadRestaurantInfo = async () => {
 
 app.post('/answer_question', authenticateToken, async (req, res) => {
     try {
-        const { user_question } = req.body;
+        const { user_question , availableItems} = req.body;
 
         if (!user_question) {
             return res.status(400).json({ error: 'Question is required' });
@@ -1216,34 +1256,27 @@ app.post('/answer_question', authenticateToken, async (req, res) => {
         }
 
         // Determine context based on question
-        const isRestaurantQuestion = /restaurant|location|hours|contact|about|chef|story|reservations|policies/i.test(correctedQuestion);
-        
-        let context = '';
-        if (isRestaurantQuestion) {
-            context = restaurantInfoContent;
-        } else {
-            context = pdfContent;
-        }
-
-        if (!context) {
-            return res.status(400).json({
-                error: 'No relevant document content available. Please process documents first.'
-            });
-        }
-
-        console.log('📄 Using document content length:', context.length);
-
-        const prompt = `You are a helpful assistant that answers questions based on provided document content.
-
-INSTRUCTIONS:
-1. Answer the question accurately based ONLY on the provided context.
-2. If the answer is not in the context, clearly state "I'm sorry, I don't have that information."
-3. Be concise but complete in your response.
+        const prompt = `You are a helpful and creative restaurant assistant. Your goal is to answer questions based ONLY on the provided context.
 
 CONTEXT:
-${context}
+=== General Restaurant Information ===
+${restaurantInfoContent || 'General information is not available.'}
+
+=== Other Uploaded Document Content ===
+${pdfContent || 'No other documents have been processed.'}
+
+=== Menu Items Available ===
+[${(availableItems || []).join(', ')}]
+
+INSTRUCTIONS:
+1.  First, analyze the user's question.
+2.  If the question is about a specific menu item (e.g., "why should I order [item]?", "is it spicy?"), use the "Menu Items Available" list as your primary context. You MUST provide a short, appealing, and creative description. You can and should invent plausible, positive details if none are provided (e.g., "Our Classic Burger is a fan-favorite, known for its juicy, flame-grilled patty and fresh, locally-sourced ingredients!").
+3.  If the question asks about ingredients you don't know (e.g., "is it spicy?"), respond honestly but positively: "I don't have the specific spice level information for the Classic Burger, but it's a timeless favorite for a reason! Would you like to add it to your cart?"
+4.  If the question is about a general restaurant topic (hours, location, policies, chef), find the answer in the "General Restaurant Information" or "Other Uploaded Document Content" sections.
+5.  If the answer cannot be found in any of the provided context, you MUST state: "I'm sorry, I don't have that information." Do not use outside knowledge.
 
 QUESTION: ${correctedQuestion}
+
 
 ANSWER:`;
 
@@ -1289,7 +1322,7 @@ ANSWER:`;
             answer: answer,
             ai_provider: 'Groq',
             model: modelUsed,
-            content_length: context.length,
+            content_length: answer.length,
             timestamp: new Date().toISOString()
         };
 

@@ -1,0 +1,24 @@
+[
+  {
+    "order_id": "51e05833-e43c-4f49-b689-c356be275087",
+    "customer_username": "Suchir",
+    "customer_phone_number": "9876543210",
+    "items": [
+      {
+        "item_name": "Classic Burger",
+        "quantity": 1,
+        "price_per_item": 12.99
+      },
+      {
+        "item_name": "Bottled Water",
+        "quantity": 2,
+        "price_per_item": 1.75
+      }
+    ],
+    "total_price": 16.49,
+    "delivery_date": "2025-08-26",
+    "part_of_day": "Evening",
+    "delivery_time": "20:00",
+    "order_timestamp": "2025-08-20T23:02:06.372+05:30"
+  }
+]
