@@ -939,7 +939,8 @@ app.post('/submit_order', authenticateToken, async (req, res) => {
     // MODIFIED: The request body will now contain a 'cart' array and delivery details
     const { cart, deliveryDate, partOfDay, deliveryTime } = req.body;
     const { username, phone_number } = req.user;
-
+    
+    console.log(cart)
     // MODIFIED: Updated validation for cart and delivery details
     if (!cart || !Array.isArray(cart) || cart.length === 0 || !deliveryDate || !partOfDay || !deliveryTime) {
         return res.status(400).json({ error: 'A non-empty cart and all delivery details are required.' });
